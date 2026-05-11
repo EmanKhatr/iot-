@@ -19,6 +19,7 @@
 #define TOPIC_SENSORS    "iot/home/sensors"
 #define TOPIC_WHITE_LED  "iot/home/control/white_led"
 #define TOPIC_ALARM_LED  "iot/home/control/alarm_led"
+#define TOPIC_DIST_BUZZ  "iot/home/control/dist_buzzer"
 
 // ── Pins ────────────────────────────────────────────────────────
 #define DHTPIN          D4
@@ -47,9 +48,10 @@ unsigned long lastBuzzerToggle = 0;
 bool          buzzerOn         = false;
 int           buzzerCount      = 0;   // counts half-cycles (8 = 4 on-off)
 
-bool manualWhiteLed = false;
-bool whiteLedState  = false;
-bool manualAlarmLed = false;
+bool manualWhiteLed  = false;
+bool whiteLedState   = false;
+bool manualAlarmLed  = false;
+bool manualDistBuzz  = false;
 
 // ── MQTT callback ───────────────────────────────────────────────
 void onMqttMessage(char* topic, byte* payload, unsigned int len) {
@@ -67,6 +69,11 @@ void onMqttMessage(char* topic, byte* payload, unsigned int len) {
       digitalWrite(LED_TEMP_BUZZER, LOW);
       buzzerOn = false; buzzerCount = 0;
     }
+
+  } else if (strcmp(topic, TOPIC_DIST_BUZZ) == 0) {
+    manualDistBuzz = true;
+    digitalWrite(LED_PIR_BUZZER, (strcmp(msg, "ON") == 0) ? HIGH : LOW);
+    if (strcmp(msg, "OFF") == 0) manualDistBuzz = false;
   }
 }
 
@@ -81,6 +88,7 @@ void reconnectMqtt() {
       Serial.println(" OK");
       mqtt.subscribe(TOPIC_WHITE_LED);
       mqtt.subscribe(TOPIC_ALARM_LED);
+      mqtt.subscribe(TOPIC_DIST_BUZZ);
     } else {
       Serial.print(" fail rc="); Serial.println(mqtt.state());
       delay(3000);
@@ -147,8 +155,9 @@ void loop() {
   digitalWrite(TRIG_PIN, LOW);
   cachedDist = (int)(pulseIn(ECHO_PIN, HIGH) * 0.034 / 2);
 
-  // Proximity alarm
-  digitalWrite(LED_PIR_BUZZER, (cachedDist < 10 && cachedDist > 0) ? HIGH : LOW);
+  // Proximity alarm (auto only if not overridden from dashboard)
+  if (!manualDistBuzz)
+    digitalWrite(LED_PIR_BUZZER, (cachedDist < 10 && cachedDist > 0) ? HIGH : LOW);
 
   // Temperature
   float t = dht.readTemperature();
@@ -169,9 +178,9 @@ void loop() {
   // ── MQTT publish ──────────────────────────────────────────────
   char payload[128];
   snprintf(payload, sizeof(payload),
-    "{\"temp\":%.1f,\"distance\":%d,\"ldr\":%d,\"white_led\":%d,\"alarm_led\":%d}",
+    "{\"temp\":%.1f,\"distance\":%d,\"ldr\":%d,\"white_led\":%d,\"alarm_led\":%d,\"dist_buzzer\":%d}",
     cachedTemp, cachedDist, cachedLDR,
-    digitalRead(LED_WHITE), digitalRead(LED_TEMP_BUZZER));
+    digitalRead(LED_WHITE), digitalRead(LED_TEMP_BUZZER), digitalRead(LED_PIR_BUZZER));
   mqtt.publish(TOPIC_SENSORS, payload);
 
   Serial.println(payload);

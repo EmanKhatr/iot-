@@ -312,6 +312,18 @@
       </label>
     </div>
 
+    <div class="control-card">
+      <div>
+        <div class="control-name">🟠 Distance Buzzer</div>
+        <div class="control-desc">Proximity alarm (D2)</div>
+        <div class="mode-chip auto" id="chip-dist-buzz">Auto — Distance</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="tog-dist-buzz" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
   </div>
 
   <!-- Charts -->
@@ -343,6 +355,7 @@ const BROKER       = 'ws://broker.hivemq.com:8000/mqtt';
 const T_SENSORS    = 'iot/home/sensors';
 const T_WHITE_LED  = 'iot/home/control/white_led';
 const T_ALARM_LED  = 'iot/home/control/alarm_led';
+const T_DIST_BUZZ  = 'iot/home/control/dist_buzzer';
 const CLIENT_ID    = 'web-' + Math.random().toString(36).slice(2, 10);
 const MAX_PTS      = 20;
 
