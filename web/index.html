@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IoT Home Dashboard</title>
+  <script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────── */
+    .topbar {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 12px; }
+    .topbar h1 { font-size: 1.1rem; font-weight: 600; }
+    .topbar h1 span { color: #58a6ff; }
+
+    .broker-tag {
+      font-size: 0.7rem;
+      padding: 3px 8px;
+      background: rgba(88,166,255,0.1);
+      border: 1px solid rgba(88,166,255,0.2);
+      border-radius: 12px;
+      color: #58a6ff;
+    }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem;
+      background: #0d1117;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid #30363d;
+      cursor: default;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #484f58;
+      transition: background 0.4s, box-shadow 0.4s;
+    }
+    .dot.connected  { background: #3fb950; box-shadow: 0 0 8px #3fb95080; }
+    .dot.error      { background: #f85149; }
+    .dot.connecting { background: #e3b341; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    /* ── Container ───────────────────────────────────────── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px 24px 40px; }
+
+    .section-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #7d8590;
+      margin: 28px 0 12px;
+    }
+
+    .last-update { font-size: 0.72rem; color: #7d8590; text-align: right; margin-top: -4px; }
+
+    /* ── Sensor cards ─────────────────────────────────────── */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+    }
+    .sensor-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 20px 20px 16px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    .sensor-card.alert {
+      border-color: #f85149;
+      box-shadow: 0 0 12px rgba(248,81,73,0.15);
+    }
+    .sensor-card.ok {
+      border-color: #3fb950;
+      box-shadow: 0 0 12px rgba(63,185,80,0.1);
+    }
+    .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .card-icon { font-size: 1.3rem; }
+    .card-name { font-size: 0.75rem; color: #7d8590; text-transform: uppercase; letter-spacing: 1px; }
+    .card-value {
+      font-size: 2.4rem;
+      font-weight: 700;
+      line-height: 1;
+      transition: color 0.3s;
+      color: #e6edf3;
+    }
+    .card-value.alert { color: #f85149; }
+    .card-value.ok    { color: #3fb950; }
+    .card-unit { font-size: 0.8rem; color: #7d8590; margin-top: 2px; }
+    .card-badge {
+      display: inline-block;
+      margin-top: 10px;
+      font-size: 0.68rem;
+      padding: 3px 9px;
+      border-radius: 10px;
+    }
+    .card-badge.alert  { background: rgba(248,81,73,0.15);  color: #f85149; }
+    .card-badge.normal { background: rgba(63,185,80,0.12);  color: #3fb950; }
+    .card-badge.muted  { background: rgba(125,133,144,0.1); color: #7d8590; }
+
+    /* ── Control cards ────────────────────────────────────── */
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 16px;
+    }
+    .control-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 18px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .control-name { font-weight: 600; font-size: 0.9rem; }
+    .control-desc { font-size: 0.72rem; color: #7d8590; margin-top: 2px; }
+    .mode-chip {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 2px 7px;
+      border-radius: 8px;
+      margin-top: 5px;
+    }
+    .mode-chip.auto   { background: rgba(63,185,80,0.1);  color: #3fb950;  border: 1px solid rgba(63,185,80,0.2);  }
+    .mode-chip.manual { background: rgba(88,166,255,0.1); color: #58a6ff;  border: 1px solid rgba(88,166,255,0.2); }
+
+    /* ── Toggle switch ───────────────────────────────────── */
+    .toggle { position: relative; display: inline-block; width: 52px; height: 28px; flex-shrink: 0; }
+    .toggle input { display: none; }
+    .slider {
+      position: absolute; inset: 0;
+      background: #30363d;
+      border-radius: 28px;
+      cursor: pointer;
+      transition: background 0.25s;
+    }
+    .slider::before {
+      content: '';
+      position: absolute;
+      width: 22px; height: 22px;
+      left: 3px; top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.25s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
+    input:checked + .slider           { background: #58a6ff; }
+    input:checked + .slider::before   { transform: translateX(24px); }
+
+    /* ── Charts ──────────────────────────────────────────── */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+      gap: 16px;
+    }
+    .chart-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .chart-title { font-size: 0.78rem; color: #7d8590; margin-bottom: 10px; }
+
+    /* ── Toast notifications ─────────────────────────────── */
+    #toasts {
+      position: fixed;
+      top: 72px;
+      right: 20px;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      background: #161b22;
+      border-radius: 10px;
+      padding: 12px 16px;
+      min-width: 270px;
+      max-width: 340px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      pointer-events: all;
+      animation: toastIn 0.3s ease;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .toast.alert { border: 1px solid #f85149; }
+    .toast.info  { border: 1px solid #58a6ff; }
+    .toast-body  { flex: 1; }
+    .toast-title { font-weight: 600; font-size: 0.85rem; }
+    .toast-msg   { font-size: 0.78rem; color: #7d8590; margin-top: 2px; }
+    .toast-close { cursor: pointer; color: #7d8590; font-size: 1rem; line-height: 1; margin-top: 1px; }
+    .toast-close:hover { color: #e6edf3; }
+    @keyframes toastIn { from { transform: translateX(16px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes toastOut { to   { transform: translateX(16px); opacity: 0; } }
+
+    /* ── Responsive ──────────────────────────────────────── */
+    @media (max-width: 560px) {
+      .topbar { padding: 12px 16px; }
+      .topbar h1 { font-size: 1rem; }
+      .broker-tag { display: none; }
+      .container { padding: 16px 16px 32px; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="toasts"></div>
+
+<!-- ── Top bar ──────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="topbar-left">
+    <h1>🏠 IoT <span>Home</span> Dashboard</h1>
+    <span class="broker-tag">HiveMQ Public</span>
+  </div>
+  <div class="status-pill">
+    <div class="dot connecting" id="dot"></div>
+    <span id="statusText">Connecting…</span>
+  </div>
+</div>
+
+<!-- ── Main ─────────────────────────────────────────────────── -->
+<div class="container">
+
+  <div class="last-update" id="lastUpdate">Waiting for data…</div>
+
+  <!-- Sensors -->
+  <p class="section-label">Live Sensors</p>
+  <div class="cards-grid">
+
+    <div class="sensor-card" id="card-temp">
+      <div class="card-header">
+        <span class="card-icon">🌡️</span>
+        <span class="card-name">Temperature</span>
+      </div>
+      <div class="card-value" id="val-temp">--</div>
+      <div class="card-unit">°C</div>
+      <div class="card-badge muted" id="badge-temp">No data</div>
+    </div>
+
+    <div class="sensor-card" id="card-dist">
+      <div class="card-header">
+        <span class="card-icon">📡</span>
+        <span class="card-name">Distance</span>
+      </div>
+      <div class="card-value" id="val-dist">--</div>
+      <div class="card-unit">cm</div>
+      <div class="card-badge muted" id="badge-dist">No data</div>
+    </div>
+
+    <div class="sensor-card" id="card-ldr">
+      <div class="card-header">
+        <span class="card-icon">💡</span>
+        <span class="card-name">Light Level</span>
+      </div>
+      <div class="card-value" id="val-ldr">--</div>
+      <div class="card-unit">/ 1024</div>
+      <div class="card-badge muted" id="badge-ldr">No data</div>
+    </div>
+
+  </div>
+
+  <!-- Controls -->
+  <p class="section-label">LED Controls</p>
+  <div class="controls-grid">
+
+    <div class="control-card">
+      <div>
+        <div class="control-name">⚪ White Light</div>
+        <div class="control-desc">Room LED (D7)</div>
+        <div class="mode-chip auto" id="chip-white">Auto — LDR</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="tog-white" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="control-card">
+      <div>
+        <div class="control-name">🔴 Temp Alarm</div>
+        <div class="control-desc">Fire buzzer (D1)</div>
+        <div class="mode-chip auto" id="chip-alarm">Auto — Temp</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="tog-alarm" />
+        <span class="slider"></span>
+      </label>
+    </div>
+
+  </div>
+
+  <!-- Charts -->
+  <p class="section-label">History — last 20 readings</p>
+  <div class="charts-grid">
+
+    <div class="chart-card">
+      <div class="chart-title">🌡️ Temperature (°C) &nbsp;·&nbsp; threshold 30°C</div>
+      <canvas id="c-temp" height="110"></canvas>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">📡 Distance (cm) &nbsp;·&nbsp; alert &lt; 10 cm</div>
+      <canvas id="c-dist" height="110"></canvas>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">💡 Light Level (0–1024)</div>
+      <canvas id="c-ldr" height="110"></canvas>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────
+const BROKER       = 'ws://broker.hivemq.com:8000/mqtt';
+const T_SENSORS    = 'iot/home/sensors';
+const T_WHITE_LED  = 'iot/home/control/white_led';
+const T_ALARM_LED  = 'iot/home/control/alarm_led';
+const CLIENT_ID    = 'web-' + Math.random().toString(36).slice(2, 10);
+const MAX_PTS      = 20;
+
+// ── Helpers ─────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
+
+// ── Toast ────────────────────────────────────────────────────────
+function toast(title, msg, type = 'alert') {
+  const t = el('div', `toast ${type}`);
+  t.innerHTML = `
+    <span style="font-size:1.2rem">${type === 'alert' ? '🚨' : 'ℹ️'}</span>
+    <div class="toast-body">
+      <div class="toast-title">${title}</div>
+      <div class="toast-msg">${msg}</div>
+    </div>
+    <span class="toast-close">✕</span>`;
+  t.querySelector('.toast-close').onclick = () => dismiss(t);
+  $('toasts').appendChild(t);
+  setTimeout(() => dismiss(t), 6000);
+}
+function dismiss(t) {
+  t.style.animation = 'toastOut 0.25s ease forwards';
+  setTimeout(() => t.remove(), 260);
+}
+
+// ── Charts ───────────────────────────────────────────────────────
+const mkBuf = () => Array(MAX_PTS).fill(null);
+
+const tempBuf = mkBuf(), distBuf = mkBuf(), ldrBuf = mkBuf();
+
+Chart.defaults.color = '#7d8590';
+
+function makeChart(canvasId, label, buf, color, threshold) {
+  const datasets = [{
+    label,
+    data: [...buf],
+    borderColor: color,
+    backgroundColor: color + '18',
+    fill: true,
+    tension: 0.4,
+    pointRadius: 2,
+    borderWidth: 2,
+  }];
+
+  if (threshold != null) {
+    datasets.push({
+      label: 'Threshold',
+      data: Array(MAX_PTS).fill(threshold),
+      borderColor: '#f8514960',
+      borderWidth: 1,
+      borderDash: [5, 4],
+      pointRadius: 0,
+      fill: false,
+    });
+  }
+
+  return new Chart($(canvasId), {
+    type: 'line',
+    data: { labels: Array(MAX_PTS).fill(''), datasets },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          grid:  { color: '#21262d' },
+          ticks: { font: { size: 10 }, color: '#7d8590' },
+        }
+      },
+      animation: { duration: 250 }
+    }
+  });
+}
+
+const charts = {
+  temp: makeChart('c-temp', 'Temp', tempBuf, '#f85149', 30),
+  dist: makeChart('c-dist', 'Dist', distBuf, '#58a6ff', 10),
+  ldr:  makeChart('c-ldr',  'LDR',  ldrBuf,  '#e3b341', null),
+};
+
+function pushChart(chart, buf, val) {
+  buf.shift(); buf.push(val);
+  chart.data.datasets[0].data = [...buf];
+  chart.update('none');
+}
+
+// ── Sensor card update ────────────────────────────────────────────
+function updateCard(id, value, unit, isAlert, okLabel, alertLabel) {
+  const card  = $(`card-${id}`);
+  const vEl   = $(`val-${id}`);
+  const badge = $(`badge-${id}`);
+  vEl.textContent = value;
+  if (isAlert) {
+    card.className  = 'sensor-card alert';
+    vEl.className   = 'card-value alert';
+    badge.className = 'card-badge alert';
+    badge.textContent = alertLabel;
+  } else {
+    card.className  = 'sensor-card ok';
+    vEl.className   = 'card-value ok';
+    badge.className = 'card-badge normal';
+    badge.textContent = okLabel;
+  }
+}
+
+// ── LED toggle handlers ───────────────────────────────────────────
+let client;
+
+function setManual(which) {
+  const chip = $(which === 'white' ? 'chip-white' : 'chip-alarm');
+  chip.textContent = 'Manual';
+  chip.className   = 'mode-chip manual';
+}
+
+$('tog-white').addEventListener('change', function () {
+  setManual('white');
+  client.publish(T_WHITE_LED, this.checked ? 'ON' : 'OFF', { retain: true });
+});
+
+$('tog-alarm').addEventListener('change', function () {
+  setManual('alarm');
+  client.publish(T_ALARM_LED, this.checked ? 'ON' : 'OFF', { retain: true });
+});
+
+// ── Alert throttle ────────────────────────────────────────────────
+let lastTempAlert = 0, lastDistAlert = 0;
+
+// ── MQTT ──────────────────────────────────────────────────────────
+client = mqtt.connect(BROKER, {
+  clientId:        CLIENT_ID,
+  keepalive:       30,
+  reconnectPeriod: 4000,
+  connectTimeout:  12000,
+});
+
+client.on('connect', () => {
+  $('dot').className   = 'dot connected';
+  $('statusText').textContent = 'Connected — HiveMQ';
+  client.subscribe(T_SENSORS);
+  toast('Connected', 'Subscribed to iot/home/sensors', 'info');
+});
+
+client.on('reconnect', () => {
+  $('dot').className   = 'dot connecting';
+  $('statusText').textContent = 'Reconnecting…';
+});
+
+client.on('error', () => {
+  $('dot').className   = 'dot error';
+  $('statusText').textContent = 'Connection error';
+});
+
+client.on('offline', () => {
+  $('dot').className   = 'dot error';
+  $('statusText').textContent = 'Offline';
+});
+
+client.on('message', (topic, raw) => {
+  if (topic !== T_SENSORS) return;
+
+  let d;
+  try { d = JSON.parse(raw.toString()); } catch { return; }
+
+  const now  = Date.now();
+  const time = new Date().toLocaleTimeString();
+  $('lastUpdate').textContent = `Last update: ${time}`;
+
+  // ── Temperature ──
+  if (d.temp != null) {
+    const isAlert = d.temp > 30;
+    updateCard('temp', d.temp.toFixed(1), '°C', isAlert, `Normal (≤30°C)`, `HIGH — ${d.temp.toFixed(1)}°C`);
+    pushChart(charts.temp, tempBuf, d.temp);
+    if (isAlert && now - lastTempAlert > 25000) {
+      lastTempAlert = now;
+      toast('🔥 High Temperature!', `Reading: ${d.temp.toFixed(1)}°C — fire alarm active`);
+    }
+  }
+
+  // ── Distance ──
+  if (d.distance != null) {
+    const isAlert = d.distance > 0 && d.distance < 10;
+    updateCard('dist', d.distance, 'cm', isAlert, 'Clear', `Object at ${d.distance} cm!`);
+    pushChart(charts.dist, distBuf, d.distance);
+    if (isAlert && now - lastDistAlert > 8000) {
+      lastDistAlert = now;
+      toast('⚠️ Object Detected!', `Distance: ${d.distance} cm (threshold: 10 cm)`);
+    }
+  }
+
+  // ── LDR ──
+  if (d.ldr != null) {
+    const isDark = d.ldr > 500;
+    updateCard('ldr', d.ldr, '/1024', isDark, 'Bright', 'Dark — light on');
+    pushChart(charts.ldr, ldrBuf, d.ldr);
+  }
+
+  // ── Reflect LED state (only if still in auto mode) ──
+  if (d.white_led != null && $('chip-white').classList.contains('auto')) {
+    $('tog-white').checked = d.white_led === 1;
+  }
+  if (d.alarm_led != null && $('chip-alarm').classList.contains('auto')) {
+    $('tog-alarm').checked = d.alarm_led === 1;
+  }
+});
+</script>
+</body>
+</html>

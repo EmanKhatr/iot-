@@ -1,120 +1,178 @@
 #include <ESP8266WiFi.h>
 #include <FirebaseESP8266.h>
+#include <PubSubClient.h>
 #include <DHT.h>
 
-// إعدادات الواي فاي والفايربيز
-#define WIFI_SSID "Rator"
+// ── WiFi ────────────────────────────────────────────────────────
+#define WIFI_SSID     "Rator"
 #define WIFI_PASSWORD "3h_1s@5n&3m$10e%"
+
+// ── Firebase ────────────────────────────────────────────────────
 #define FIREBASE_HOST "https://shit-323b1-default-rtdb.firebaseio.com/"
 #define FIREBASE_AUTH "AIzaSyANL10a7fyC90k8xYu6SkR0oeeQQFR4j1E"
 
-// تعريف البينات حسب الجدول
-#define DHTPIN D4
-#define DHTTYPE DHT11
-#define LED_TEMP_BUZZER D1 // D15 (GPIO15)
-#define TRIG_PIN D5        // GPIO14
-#define ECHO_PIN D6        // GPIO12
-#define LED_PIR_BUZZER D2  // GPIO4
-#define LDR_PIN A0
-#define LED_WHITE D7       // GPIO13
+// ── MQTT ────────────────────────────────────────────────────────
+#define MQTT_BROKER "broker.hivemq.com"
+#define MQTT_PORT   1883
 
-DHT dht(DHTPIN, DHTTYPE);
+// Topics
+#define TOPIC_SENSORS    "iot/home/sensors"
+#define TOPIC_WHITE_LED  "iot/home/control/white_led"
+#define TOPIC_ALARM_LED  "iot/home/control/alarm_led"
+
+// ── Pins ────────────────────────────────────────────────────────
+#define DHTPIN          D4
+#define DHTTYPE         DHT11
+#define LED_TEMP_BUZZER D1   // fire alarm
+#define TRIG_PIN        D5
+#define ECHO_PIN        D6
+#define LED_PIR_BUZZER  D2   // proximity alarm
+#define LDR_PIN         A0
+#define LED_WHITE       D7
+
+DHT          dht(DHTPIN, DHTTYPE);
 FirebaseData firebaseData;
-FirebaseConfig config;
-FirebaseAuth auth;
+FirebaseConfig fbConfig;
+FirebaseAuth   fbAuth;
+WiFiClient     espClient;
+PubSubClient   mqtt(espClient);
 
+// ── State ───────────────────────────────────────────────────────
+float cachedTemp     = 0;
+int   cachedDist     = 0;
+int   cachedLDR      = 0;
+
+unsigned long lastPublish      = 0;
+unsigned long lastBuzzerToggle = 0;
+bool          buzzerOn         = false;
+int           buzzerCount      = 0;   // counts half-cycles (8 = 4 on-off)
+
+bool manualWhiteLed = false;
+bool whiteLedState  = false;
+bool manualAlarmLed = false;
+
+// ── MQTT callback ───────────────────────────────────────────────
+void onMqttMessage(char* topic, byte* payload, unsigned int len) {
+  char msg[16] = {};
+  for (unsigned int i = 0; i < len && i < 15; i++) msg[i] = (char)payload[i];
+
+  if (strcmp(topic, TOPIC_WHITE_LED) == 0) {
+    manualWhiteLed = true;
+    whiteLedState  = (strcmp(msg, "ON") == 0);
+    digitalWrite(LED_WHITE, whiteLedState ? HIGH : LOW);
+
+  } else if (strcmp(topic, TOPIC_ALARM_LED) == 0) {
+    manualAlarmLed = (strcmp(msg, "ON") == 0);
+    if (!manualAlarmLed) {
+      digitalWrite(LED_TEMP_BUZZER, LOW);
+      buzzerOn = false; buzzerCount = 0;
+    }
+  }
+}
+
+// ── MQTT reconnect ──────────────────────────────────────────────
+void reconnectMqtt() {
+  char clientId[32];
+  snprintf(clientId, sizeof(clientId), "esp8266-%06X", ESP.getChipId());
+
+  while (!mqtt.connected()) {
+    Serial.print("MQTT connecting...");
+    if (mqtt.connect(clientId)) {
+      Serial.println(" OK");
+      mqtt.subscribe(TOPIC_WHITE_LED);
+      mqtt.subscribe(TOPIC_ALARM_LED);
+    } else {
+      Serial.print(" fail rc="); Serial.println(mqtt.state());
+      delay(3000);
+    }
+  }
+}
+
+// ── Setup ───────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  
+
   pinMode(LED_TEMP_BUZZER, OUTPUT);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   pinMode(LED_PIR_BUZZER, OUTPUT);
   pinMode(LED_WHITE, OUTPUT);
-  
+
   dht.begin();
-  
-  // الاتصال بالواي فاي
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  
-  config.host = FIREBASE_HOST;
-  config.signer.tokens.legacy_token = FIREBASE_AUTH;
-  Firebase.begin(&config, &auth);
+  Serial.print("WiFi");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println(" connected");
+
+  fbConfig.host = FIREBASE_HOST;
+  fbConfig.signer.tokens.legacy_token = FIREBASE_AUTH;
+  Firebase.begin(&fbConfig, &fbAuth);
+
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setCallback(onMqttMessage);
 }
 
+// ── Loop ────────────────────────────────────────────────────────
 void loop() {
-  // 1. قراءة المسافة (Ultrasonic)
+  // Keep MQTT alive
+  if (!mqtt.connected()) reconnectMqtt();
+  mqtt.loop();
+
+  unsigned long now = millis();
+
+  // ── Non-blocking temp buzzer (4 on-off cycles every sensor tick) ──
+  if (!manualAlarmLed) {
+    if (cachedTemp > 30) {
+      if (now - lastBuzzerToggle >= 150 && buzzerCount < 8) {
+        lastBuzzerToggle = now;
+        buzzerOn = !buzzerOn;
+        digitalWrite(LED_TEMP_BUZZER, buzzerOn ? HIGH : LOW);
+        buzzerCount++;
+      }
+    } else {
+      digitalWrite(LED_TEMP_BUZZER, LOW);
+      buzzerOn = false; buzzerCount = 0;
+    }
+  }
+
+  // ── Sensor read + publish every 4 s ──────────────────────────
+  if (now - lastPublish < 4000) return;
+  lastPublish  = now;
+  buzzerCount  = 0;   // reset buzzer cycle for next period
+
+  // Ultrasonic
+  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-  long duration = pulseIn(ECHO_PIN, HIGH);
-  int distance = duration * 0.034 / 2;
+  cachedDist = (int)(pulseIn(ECHO_PIN, HIGH) * 0.034 / 2);
 
-  // التحكم في إنذار الحركة/المسافة
-  if (distance < 10 && distance > 0) { // لو المسافة أقل من 10 سم
-    digitalWrite(LED_PIR_BUZZER, HIGH);
-  } else {
-    digitalWrite(LED_PIR_BUZZER, LOW);
-  }
+  // Proximity alarm
+  digitalWrite(LED_PIR_BUZZER, (cachedDist < 10 && cachedDist > 0) ? HIGH : LOW);
 
-  // // 2. قراءة الحرارة
-  // float temp = dht.readTemperature();
-  // if (temp > 30) { // لو الحرارة أعلى من 30 (احتمال حريق)
-  //   digitalWrite(LED_TEMP_BUZZER, HIGH);
-  // } else {
-  //   digitalWrite(LED_TEMP_BUZZER, LOW);
-  // }
+  // Temperature
+  float t = dht.readTemperature();
+  if (!isnan(t)) cachedTemp = t;
 
+  // LDR
+  cachedLDR = analogRead(LDR_PIN);
 
-//   float temp = dht.readTemperature();
-// if (temp > 30) {
-//     tone(LED_TEMP_BUZZER, 1000); // تردد عالي (وي)
-//     delay(100);
-//     tone(LED_TEMP_BUZZER, 100);  // تردد واطي (وا)
-//     delay(200);
-//   } else {
-//     noTone(LED_TEMP_BUZZER);     // يوقف الصوت تماماً
-//     digitalWrite(LED_TEMP_BUZZER, LOW);
-//   }
+  // Auto white LED
+  if (!manualWhiteLed)
+    digitalWrite(LED_WHITE, cachedLDR > 500 ? HIGH : LOW);
 
+  // ── Firebase ──────────────────────────────────────────────────
+  Firebase.pushFloat(firebaseData, "/Home/Temperature", cachedTemp);
+  Firebase.pushInt(firebaseData,   "/Home/Distance",    cachedDist);
+  Firebase.pushInt(firebaseData,   "/Home/LDR",         cachedLDR);
 
-// 2. التحكم في إنذار الحرارة (تأثير السرينة)
- float temp = dht.readTemperature();
-  if (temp > 30) { 
-    // صوت عالي وسريع (وي وا وي وا)
-    digitalWrite(LED_TEMP_BUZZER, HIGH); // تشغيل الليد والبازر
-    delay(150);                          // مدة الصفرة (سريعة)
-    digitalWrite(LED_TEMP_BUZZER, LOW);  // إطفاء
-    delay(150);                          // مدة الفصل
-    
-    // ممكن تكرريها مرة كمان عشان تضمنين إن اللوب سريعة
-    digitalWrite(LED_TEMP_BUZZER, HIGH);
-    delay(150);
-    digitalWrite(LED_TEMP_BUZZER, LOW);
-    delay(150);
-  } else {
-    digitalWrite(LED_TEMP_BUZZER, LOW); // طفي كل حاجة لو الحرارة طبيعية
-  }
+  // ── MQTT publish ──────────────────────────────────────────────
+  char payload[128];
+  snprintf(payload, sizeof(payload),
+    "{\"temp\":%.1f,\"distance\":%d,\"ldr\":%d,\"white_led\":%d,\"alarm_led\":%d}",
+    cachedTemp, cachedDist, cachedLDR,
+    digitalRead(LED_WHITE), digitalRead(LED_TEMP_BUZZER));
+  mqtt.publish(TOPIC_SENSORS, payload);
 
-  // 3. قراءة الضوء (LDR)
-  int ldrValue = analogRead(LDR_PIN);
-  if (ldrValue > 500) { // قيمة الضوء منخفضة (ظلام)
-    digitalWrite(LED_WHITE, HIGH);
-  } else {
-    digitalWrite(LED_WHITE, LOW);
-  }
-
-  // إرسال البيانات للفايربيز
-  Firebase.pushFloat(firebaseData, "/Home/Temperature", temp);
-  Firebase.pushInt(firebaseData, "/Home/Distance", distance);
-  Firebase.pushInt(firebaseData, "/Home/LDR", ldrValue);
-
-
-  delay(4000); // تحديث كل ثانية
+  Serial.println(payload);
 }
