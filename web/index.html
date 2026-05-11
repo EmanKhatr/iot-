@@ -316,7 +316,7 @@
       <div>
         <div class="control-name">🟠 Distance Buzzer</div>
         <div class="control-desc">Proximity alarm (D2)</div>
-        <div class="mode-chip auto" id="chip-dist-buzz">Auto — Distance</div>
+        <div class="mode-chip manual" id="chip-dist-buzz">Manual</div>
       </div>
       <label class="toggle">
         <input type="checkbox" id="tog-dist-buzz" />
@@ -479,6 +479,13 @@ $('tog-white').addEventListener('change', function () {
 $('tog-alarm').addEventListener('change', function () {
   setManual('alarm');
   client.publish(T_ALARM_LED, this.checked ? 'ON' : 'OFF', { retain: true });
+});
+
+$('tog-dist-buzz').addEventListener('change', function () {
+  const chip = $('chip-dist-buzz');
+  chip.textContent = 'Manual';
+  chip.className   = 'mode-chip manual';
+  client.publish(T_DIST_BUZZ, this.checked ? 'ON' : 'OFF', { retain: true });
 });
 
 // ── Alert throttle ────────────────────────────────────────────────

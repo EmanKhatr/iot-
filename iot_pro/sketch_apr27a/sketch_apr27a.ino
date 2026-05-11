@@ -51,7 +51,6 @@ int           buzzerCount      = 0;   // counts half-cycles (8 = 4 on-off)
 bool manualWhiteLed  = false;
 bool whiteLedState   = false;
 bool manualAlarmLed  = false;
-bool manualDistBuzz  = false;
 
 // ── MQTT callback ───────────────────────────────────────────────
 void onMqttMessage(char* topic, byte* payload, unsigned int len) {
@@ -71,9 +70,7 @@ void onMqttMessage(char* topic, byte* payload, unsigned int len) {
     }
 
   } else if (strcmp(topic, TOPIC_DIST_BUZZ) == 0) {
-    manualDistBuzz = true;
     digitalWrite(LED_PIR_BUZZER, (strcmp(msg, "ON") == 0) ? HIGH : LOW);
-    if (strcmp(msg, "OFF") == 0) manualDistBuzz = false;
   }
 }
 
@@ -155,9 +152,6 @@ void loop() {
   digitalWrite(TRIG_PIN, LOW);
   cachedDist = (int)(pulseIn(ECHO_PIN, HIGH) * 0.034 / 2);
 
-  // Proximity alarm (auto only if not overridden from dashboard)
-  if (!manualDistBuzz)
-    digitalWrite(LED_PIR_BUZZER, (cachedDist < 10 && cachedDist > 0) ? HIGH : LOW);
 
   // Temperature
   float t = dht.readTemperature();
